@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROM Player</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #111;
+            color: #eee;
+            font-family: system-ui, sans-serif;
+        }
+
+        #game {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* ---- Menú de selección de juegos ---- */
+        #menu {
+            box-sizing: border-box;
+            width: 100%;
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        #menu h1 {
+            margin: 0 0 4px;
+        }
+
+        #menu .subtitle {
+            color: #999;
+            margin: 0 0 24px;
+        }
+
+        .system-block {
+            margin-bottom: 32px;
+        }
+
+        .system-block h2 {
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+        }
+
+        .game-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .game-card {
+            background: #1c1c1c;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px 12px;
+            text-align: center;
+            cursor: pointer;
+            word-break: break-word;
+        }
+
+        .game-card:hover {
+            border-color: #0066ff;
+            background: #222;
+        }
+
+        .empty {
+            color: #666;
+            font-style: italic;
+        }
+
+        .error {
+            color: #ff5555;
+        }
+
+        /* ---- Barra superior dentro del juego ---- */
+        #back-bar {
+            position: fixed;
+            top: 8px;
+            left: 8px;
+            z-index: 10000;
+        }
+
+        #back-bar button {
+            background: #1c1c1c;
+            color: #eee;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="menu">
+        <h1>ROM Player</h1>
+        <p class="subtitle">Elegí un juego para empezar a jugar.</p>
+        <div id="menu-content">
+            <p>Cargando lista de juegos...</p>
+        </div>
+    </div>
+
+    <div id="back-bar" hidden>
+        <button id="back-btn">&larr; Volver al menú</button>
+    </div>
+
+    <div id="game"></div>
+
+    <script>
+        const SYSTEMS = {
+            n64: { label: 'Nintendo 64', core: 'mupen64plus_next', folder: 'roms/n64/' },
+            snes: { label: 'Super Nintendo', core: 'snes9x', folder: 'roms/snes/' },
+        };
+        const DATA_PATH = 'data/';
+
+        const menuEl = document.getElementById('menu');
+        const menuContentEl = document.getElementById('menu-content');
+        const gameEl = document.getElementById('game');
+        const backBar = document.getElementById('back-bar');
+
+        function displayName(filename) {
+            return filename.replace(/\.[^.]+$/, '');
+        }
+
+        function renderMenu(index) {
+            menuContentEl.innerHTML = '';
+            let totalGames = 0;
+
+            for (const [systemId, system] of Object.entries(SYSTEMS)) {
+                const files = index[systemId] || [];
+                totalGames += files.length;
+
+                const block = document.createElement('div');
+                block.className = 'system-block';
+
+                const heading = document.createElement('h2');
+                heading.textContent = system.label;
+                block.appendChild(heading);
+
+                if (files.length === 0) {
+                    const p = document.createElement('p');
+                    p.className = 'empty';
+                    p.textContent = `No hay juegos en roms/${systemId}/ todavía.`;
+                    block.appendChild(p);
+                } else {
+                    const grid = document.createElement('div');
+                    grid.className = 'game-grid';
+                    for (const file of files) {
+                        const card = document.createElement('div');
+                        card.className = 'game-card';
+                        card.textContent = displayName(file);
+                        card.addEventListener('click', () => launchGame(systemId, file));
+                        grid.appendChild(card);
+                    }
+                    block.appendChild(grid);
+                }
+
+                menuContentEl.appendChild(block);
+            }
+
+            if (totalGames === 0) {
+                const p = document.createElement('p');
+                p.className = 'empty';
+                p.textContent = 'Todavía no subiste ninguna ROM. Mirá roms/README.md para saber cómo agregar juegos.';
+                menuContentEl.appendChild(p);
+            }
+        }
+
+        function launchGame(systemId, filename) {
+            const system = SYSTEMS[systemId];
+
+            menuEl.hidden = true;
+            backBar.hidden = false;
+
+            window.EJS_player = '#game';
+            window.EJS_core = system.core;
+            window.EJS_gameName = displayName(filename);
+            window.EJS_color = '#0066ff';
+            window.EJS_startOnLoaded = true;
+            window.EJS_pathtodata = DATA_PATH;
+            window.EJS_gameUrl = system.folder + filename;
+
+            const script = document.createElement('script');
+            script.src = `${DATA_PATH}loader.js`;
+            script.onerror = () => {
+                gameEl.innerHTML = `<p class="error" style="padding:24px">No se pudo cargar ${DATA_PATH}loader.js</p>`;
+            };
+            document.body.appendChild(script);
+        }
+
+        document.getElementById('back-btn').addEventListener('click', () => {
+            window.location.reload();
+        });
+
+        fetch('games.json')
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
+            .then(renderMenu)
+            .catch(err => {
+                menuContentEl.innerHTML =
+                    `<p class="error">No se pudo cargar games.json (${err.message}). ` +
+                    `¿Corrió el workflow de deploy y Settings &gt; Pages usa "GitHub Actions" como origen?</p>`;
+            });
+    </script>
+</body>
+
+</html>

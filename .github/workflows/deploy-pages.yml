@@ -1,0 +1,145 @@
+name: Deploy to GitHub Pages
+
+# Publica el sitio con los BINARIOS REALES de Git LFS (ROMs de roms/n64 y
+# roms/snes). GitHub Pages servido directamente desde una rama NO resuelve
+# punteros LFS: entrega el archivo de texto de ~130 bytes. Este workflow hace
+# checkout con lfs:true, materializa el contenido real y lo sube como
+# artefacto de Pages, que sí se sirve tal cual (bytes reales).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un solo despliegue a la vez; no cancela uno en curso (subir ROMs grandes tarda).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (sin LFS todavía)
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Calcular IDs de los objetos LFS
+        run: git lfs ls-files -l | awk '{print $1}' | sort > .lfs-oids.txt
+
+      - name: Restaurar caché de objetos LFS
+        id: lfs-cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('.lfs-oids.txt') }}
+
+      # Solo descarga de LFS lo que NO esté ya en caché.
+      # Primer despliegue (o cuando agregues/cambies ROMs): cuenta contra la
+      # cuota de ancho de banda de LFS (1 GiB/mes en el plan gratis).
+      # Despliegues siguientes sin cambios en las ROMs: 0 bytes de LFS.
+      - name: Traer binarios reales de LFS
+        run: git lfs pull
+
+      - name: Verificar que las ROMs NO son punteros LFS
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            local f="$1" min="$2"
+            if [ ! -f "$f" ]; then echo "::error::falta $f"; fail=1; return; fi
+            local size
+            size=$(stat -c%s "$f")
+            printf '%-60s %12d bytes\n' "$f" "$size"
+            if [ "$size" -lt "$min" ]; then
+              echo "::error::$f parece un puntero LFS o está truncado ($size < $min)"
+              fail=1
+            fi
+            if head -c 64 "$f" | grep -q 'git-lfs.github.com/spec'; then
+              echo "::error::$f empieza con la cabecera de un puntero Git LFS"
+              fail=1
+            fi
+          }
+
+          check data/emulator.min.js            100000
+          check data/cores/mupen64plus_next-wasm.data 100000
+          check data/cores/snes9x-wasm.data      100000
+
+          shopt -s nullglob
+          for f in roms/n64/* roms/snes/*; do
+            [ "$(basename "$f")" = ".gitkeep" ] && continue
+            check "$f" 10000
+          done
+
+          [ "$fail" -eq 0 ] || { echo "Hay archivos que son punteros LFS. Revisa lfs:true / el objeto en el servidor."; exit 1; }
+
+      - name: Generar games.json a partir de roms/n64 y roms/snes
+        run: |
+          set -euo pipefail
+          list_json() {
+            local dir="$1"
+            shopt -s nullglob
+            local files=("$dir"/*)
+            local out="["
+            local first=1
+            for f in "${files[@]}"; do
+              local name
+              name=$(basename "$f")
+              [ "$name" = ".gitkeep" ] && continue
+              [ "$name" = "README.md" ] && continue
+              if [ "$first" -eq 0 ]; then out+=","; fi
+              # Escapar comillas y backslashes por si el nombre del archivo las trae.
+              local escaped=${name//\\/\\\\}
+              escaped=${escaped//\"/\\\"}
+              out+="\"${escaped}\""
+              first=0
+            done
+            out+="]"
+            echo "$out"
+          }
+          n64_json=$(list_json roms/n64)
+          snes_json=$(list_json roms/snes)
+          printf '{"n64":%s,"snes":%s}\n' "$n64_json" "$snes_json" > games.json
+          echo "games.json generado:"; cat games.json
+
+      - name: Ensamblar el sitio en _site/
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp -r index.html games.json roms data _site/
+          touch _site/.nojekyll
+          # El límite de un sitio de Pages es 1 GB. data/cores/ trae ~180 cores
+          # de todas las consolas; para N64/SNES solo hacen falta estos dos.
+          # Agrega más patrones acá si sumás otra consola.
+          find _site/data/cores -maxdepth 1 -name '*.data' \
+            ! -name 'mupen64plus_next-*' ! -name 'snes9x-*' -delete
+          echo "Tamaño total del sitio:"; du -sh _site
+          echo "ROMs publicadas:"; find _site/roms -type f ! -name '.gitkeep' ! -name 'README.md'
+
+      - name: Configurar Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Habilita Pages en modo "GitHub Actions" automáticamente si aún no lo está.
+          enablement: true
+
+      - name: Subir artefacto de Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Desplegar a GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

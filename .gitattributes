@@ -1,0 +1,24 @@
+# Imágenes de disco / ROMs grandes -> Git LFS
+*.bin  filter=lfs diff=lfs merge=lfs -text
+*.iso  filter=lfs diff=lfs merge=lfs -text
+*.chd  filter=lfs diff=lfs merge=lfs -text
+*.img  filter=lfs diff=lfs merge=lfs -text
+*.pbp  filter=lfs diff=lfs merge=lfs -text
+*.mdf  filter=lfs diff=lfs merge=lfs -text
+*.nrg  filter=lfs diff=lfs merge=lfs -text
+
+# ROMs de Nintendo 64
+*.n64  filter=lfs diff=lfs merge=lfs -text
+*.z64  filter=lfs diff=lfs merge=lfs -text
+*.v64  filter=lfs diff=lfs merge=lfs -text
+
+# ROMs de Super Nintendo
+*.sfc  filter=lfs diff=lfs merge=lfs -text
+*.smc  filter=lfs diff=lfs merge=lfs -text
+*.swc  filter=lfs diff=lfs merge=lfs -text
+*.fig  filter=lfs diff=lfs merge=lfs -text
+
+# Los scripts del workflow corren en un runner Linux: forzar saltos de línea LF.
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sh   text eol=lf
