@@ -133,6 +133,95 @@
             return filename.replace(/\.[^.]+$/, '');
         }
 
+        // ---- Lectura del nombre interno grabado dentro de la ROM ----
+        // Así el menú muestra el título real del juego sin importar cómo
+        // se llame el archivo (evita depender de renombrar prolijo a mano).
+
+        async function fetchHeaderBytes(url, length) {
+            const res = await fetch(url, { headers: { Range: `bytes=0-${length - 1}` } });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            // Si el servidor ignora el Range y devuelve el archivo entero,
+            // no vale la pena parsearlo entero: mejor no usarlo.
+            if (res.status !== 206 && Number(res.headers.get('content-length') || 0) > length * 4) {
+                throw new Error('el servidor no soporta Range requests');
+            }
+            return new Uint8Array(await res.arrayBuffer());
+        }
+
+        function cleanRomName(bytes, offset, len) {
+            let str = '';
+            for (let i = offset; i < offset + len && i < bytes.length; i++) {
+                const b = bytes[i];
+                if (b === 0) break;
+                if (b >= 0x20 && b < 0x7f) str += String.fromCharCode(b);
+            }
+            return str.replace(/\s+/g, ' ').trim();
+        }
+
+        function parseN64Name(bytes) {
+            if (bytes.length < 0x34) return '';
+            const m0 = bytes[0], m1 = bytes[1], m2 = bytes[2], m3 = bytes[3];
+            let normalized;
+            if (m0 === 0x80 && m1 === 0x37 && m2 === 0x12 && m3 === 0x40) {
+                normalized = bytes; // .z64: big-endian nativo
+            } else if (m0 === 0x37 && m1 === 0x80 && m2 === 0x40 && m3 === 0x12) {
+                normalized = new Uint8Array(bytes.length); // .v64: bytes intercambiados de a 2
+                for (let i = 0; i + 1 < bytes.length; i += 2) {
+                    normalized[i] = bytes[i + 1];
+                    normalized[i + 1] = bytes[i];
+                }
+            } else if (m0 === 0x40 && m1 === 0x12 && m2 === 0x37 && m3 === 0x80) {
+                normalized = new Uint8Array(bytes.length); // .n64: little-endian, palabras de 4 bytes
+                for (let i = 0; i + 3 < bytes.length; i += 4) {
+                    normalized[i] = bytes[i + 3];
+                    normalized[i + 1] = bytes[i + 2];
+                    normalized[i + 2] = bytes[i + 1];
+                    normalized[i + 3] = bytes[i];
+                }
+            } else {
+                return '';
+            }
+            return cleanRomName(normalized, 0x20, 20);
+        }
+
+        function snesChecksumOk(bytes, headerOffset) {
+            if (bytes.length < headerOffset + 0x20) return false;
+            const complement = bytes[headerOffset + 0x1c] | (bytes[headerOffset + 0x1d] << 8);
+            const checksum = bytes[headerOffset + 0x1e] | (bytes[headerOffset + 0x1f] << 8);
+            return ((complement + checksum) & 0xffff) === 0xffff;
+        }
+
+        function parseSnesName(bytes) {
+            // LoROM y HiROM, con y sin los 512 bytes de header de copiadora vieja.
+            const candidates = [0x7fc0, 0xffc0, 0x7fc0 + 512, 0xffc0 + 512];
+            for (const off of candidates) {
+                if (snesChecksumOk(bytes, off)) {
+                    const name = cleanRomName(bytes, off, 21);
+                    if (name) return name;
+                }
+            }
+            // Ningún checksum válido: nos quedamos con el candidato más "legible".
+            let best = '';
+            for (const off of candidates) {
+                const name = cleanRomName(bytes, off, 21);
+                if (name.length > best.length) best = name;
+            }
+            return best;
+        }
+
+        async function getRomDisplayName(systemId, filename) {
+            const system = SYSTEMS[systemId];
+            const fallback = displayName(filename);
+            try {
+                const headerLen = systemId === 'snes' ? 0xffc0 + 32 + 512 : 0x40;
+                const bytes = await fetchHeaderBytes(system.folder + filename, headerLen);
+                const name = systemId === 'n64' ? parseN64Name(bytes) : parseSnesName(bytes);
+                return name || fallback;
+            } catch (err) {
+                return fallback;
+            }
+        }
+
         function renderMenu(index) {
             menuContentEl.innerHTML = '';
             let totalGames = 0;
@@ -159,9 +248,15 @@
                     for (const file of files) {
                         const card = document.createElement('div');
                         card.className = 'game-card';
-                        card.textContent = displayName(file);
-                        card.addEventListener('click', () => launchGame(systemId, file));
+                        card.textContent = displayName(file); // se reemplaza abajo por el nombre real de la ROM
+                        card.dataset.displayName = displayName(file);
+                        card.addEventListener('click', () => launchGame(systemId, file, card.dataset.displayName));
                         grid.appendChild(card);
+
+                        getRomDisplayName(systemId, file).then(name => {
+                            card.textContent = name;
+                            card.dataset.displayName = name;
+                        });
                     }
                     block.appendChild(grid);
                 }
@@ -177,7 +272,7 @@
             }
         }
 
-        function launchGame(systemId, filename) {
+        function launchGame(systemId, filename, gameName) {
             const system = SYSTEMS[systemId];
 
             menuEl.hidden = true;
@@ -185,7 +280,7 @@
 
             window.EJS_player = '#game';
             window.EJS_core = system.core;
-            window.EJS_gameName = displayName(filename);
+            window.EJS_gameName = gameName || displayName(filename);
             window.EJS_color = '#0066ff';
             window.EJS_startOnLoaded = true;
             window.EJS_pathtodata = DATA_PATH;
